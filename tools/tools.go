@@ -503,8 +503,8 @@ func (h *Handler) disableSchedule(ctx auth.OrgContext, args map[string]interface
 // ── Connection Management ───────────────────────────────────────────────────
 
 func (h *Handler) createConnection(ctx auth.OrgContext, args map[string]interface{}) models.ToolResult {
-	if !ctx.HasScope("connectors:write") {
-		return scopeError("connectors:write")
+	if !ctx.HasScope("connections:write") {
+		return scopeError("connections:write")
 	}
 
 	name, ok := stringArg(args, "name")
@@ -539,8 +539,8 @@ func (h *Handler) createConnection(ctx auth.OrgContext, args map[string]interfac
 }
 
 func (h *Handler) updateConnection(ctx auth.OrgContext, args map[string]interface{}) models.ToolResult {
-	if !ctx.HasScope("connectors:write") {
-		return scopeError("connectors:write")
+	if !ctx.HasScope("connections:write") {
+		return scopeError("connections:write")
 	}
 
 	connectionID, ok := stringArg(args, "connection_id")
@@ -568,8 +568,8 @@ func (h *Handler) updateConnection(ctx auth.OrgContext, args map[string]interfac
 }
 
 func (h *Handler) deleteConnection(ctx auth.OrgContext, args map[string]interface{}) models.ToolResult {
-	if !ctx.HasScope("connectors:write") {
-		return scopeError("connectors:write")
+	if !ctx.HasScope("connections:write") {
+		return scopeError("connections:write")
 	}
 
 	connectionID, ok := stringArg(args, "connection_id")
@@ -585,8 +585,8 @@ func (h *Handler) deleteConnection(ctx auth.OrgContext, args map[string]interfac
 }
 
 func (h *Handler) listConnectionTypes(ctx auth.OrgContext, _ map[string]interface{}) models.ToolResult {
-	if !ctx.HasScope("connectors:read") {
-		return scopeError("connectors:read")
+	if !ctx.HasScope("connections:read") {
+		return scopeError("connections:read")
 	}
 
 	types, err := h.client.ListConnectionTypes(ctx)

@@ -1,10 +1,13 @@
 FROM golang:1.23-alpine AS builder
 
+ARG VERSION=dev
+
 WORKDIR /app
 COPY go.mod ./
-# go.sum will be generated after `go mod tidy`
 COPY . .
-RUN go mod tidy && go build -o planasonix-mcp .
+RUN go mod tidy && CGO_ENABLED=0 go build \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o planasonix-mcp .
 
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates tzdata
