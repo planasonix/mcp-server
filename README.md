@@ -1,176 +1,226 @@
-# planasonix-mcp
+# Planasonix MCP Server
 
-MCP (Model Context Protocol) server for Planasonix — exposes pipeline management
-tools to Claude and other MCP-compatible AI clients, with full multi-tenant
-isolation baked in from the ground up.
+[![Release](https://img.shields.io/github/v/release/planasonix/mcp-server)](https://github.com/planasonix/mcp-server/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
----
+Connect [Planasonix](https://planasonix.com) to Claude, Cursor, Windsurf, VS Code, and any AI assistant that supports the [Model Context Protocol](https://modelcontextprotocol.io).
 
-## Project Structure
-
-```
-planasonix-mcp/
-├── main.go                  # Entry point, config, graceful shutdown
-├── Dockerfile
-├── auth/
-│   └── auth.go              # API key validation → OrgContext resolution
-├── middleware/
-│   └── middleware.go        # RequestID, Logger, Recover middleware
-├── models/
-│   └── models.go            # MCP protocol types + Planasonix domain types
-├── server/
-│   └── server.go            # HTTP/SSE handler, auth enforcement, rate limiter
-└── tools/
-    ├── tools.go             # All MCP tool handlers (org-scoped)
-    └── stub_client.go       # Stub PlanasonixClient — replace with real HTTP client
-```
+Manage ETL pipelines, create connections, set schedules, troubleshoot failures, and more — all through natural language.
 
 ---
 
 ## Quick Start
 
+### 1. Download
+
+Grab the latest binary for your platform from [Releases](https://github.com/planasonix/mcp-server/releases/latest):
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `planasonix-mcp-darwin-arm64` |
+| macOS (Intel) | `planasonix-mcp-darwin-amd64` |
+| Linux (x86_64) | `planasonix-mcp-linux-amd64` |
+| Linux (ARM) | `planasonix-mcp-linux-arm64` |
+| Windows | `planasonix-mcp-windows-amd64.exe` |
+
 ```bash
-# 1. Install dependencies
-go mod tidy
-
-# 2. Run locally (uses stub client with fake data)
-PORT=8080 go run .
-
-# 3. Test the health endpoint
-curl http://localhost:8080/health
-
-# 4. Test a tool call with a valid API key
-curl -X POST http://localhost:8080/messages \
-  -H "Authorization: Bearer plx_live_examplekey123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "list_pipelines",
-      "arguments": {}
-    }
-  }'
+# macOS / Linux
+chmod +x planasonix-mcp-darwin-arm64
+sudo mv planasonix-mcp-darwin-arm64 /usr/local/bin/planasonix-mcp
 ```
 
----
+### 2. Get Your API Key
 
-## Security Model
+1. Log in to your [Planasonix dashboard](https://app.planasonix.com)
+2. Go to **Settings → API Keys**
+3. Click **Generate New Key** and select the scopes you need
+4. Copy the key (it's only shown once)
 
-### The golden rule
-**Tenant identity is ALWAYS derived from the API key — never from client-supplied parameters.**
+### 3. Configure Your AI Client
 
-The flow:
-1. Client sends `Authorization: Bearer plx_live_<key>`
-2. `auth.KeyStore.Validate()` resolves the key to an `OrgContext` (`org_id`, `org_name`, `scopes`)
-3. `OrgContext` is attached to the request `context.Context`
-4. Every tool handler receives `OrgContext` — it never reads `org_id` from tool arguments
-5. All DB/API queries are scoped to `orgCtx.OrgID` at the call site
+<details>
+<summary><strong>Claude Desktop</strong></summary>
 
-### Defense layers
-| Layer | Mechanism |
-|-------|-----------|
-| Authentication | Bearer token → OrgContext on every request |
-| Authorization | Per-scope checks (`pipelines:read`, `pipelines:write`, `connectors:read`) |
-| Data isolation | All internal API calls include `orgID` derived from auth context |
-| Resource validation | IDs from tool args are re-verified against org before use |
-| Rate limiting | Token bucket per `org_id`, 60 req/min default |
-| Prompt injection defense | Tool argument `org_id` is always ignored; auth context is authoritative |
-| Error messages | Cross-org resource access returns 404, not 403 (avoids confirming existence) |
-
----
-
-## Available Tools
-
-| Tool | Scope required | Description |
-|------|---------------|-------------|
-| `list_pipelines` | `pipelines:read` | List all org pipelines with status |
-| `get_pipeline` | `pipelines:read` | Get details for a specific pipeline |
-| `trigger_pipeline` | `pipelines:write` | Trigger an immediate pipeline run |
-| `pause_pipeline` | `pipelines:write` | Pause a pipeline's schedule |
-| `resume_pipeline` | `pipelines:write` | Resume a paused pipeline |
-| `get_run_history` | `pipelines:read` | Get recent run history with errors |
-| `get_pipeline_health` | `pipelines:read` | Error rate, latency, SLA status |
-| `list_connectors` | `connectors:read` | List source/destination connectors |
-| `test_connection` | `connectors:read` | Test connector reachability |
-
----
-
-## Wiring to Your Real Planasonix API
-
-The `tools/stub_client.go` implements `PlanasonixClient` with fake data.
-To wire it to your real internal API:
-
-1. Create `tools/http_client.go` implementing `PlanasonixClient`
-2. Make authenticated HTTP calls to your internal Planasonix API
-3. In `server/server.go`, swap `tools.NewStubClient()` for `tools.NewHTTPClient(cfg.PlanasonixAPI, cfg.InternalToken)`
-
-Example:
-```go
-type HTTPClient struct {
-    baseURL string
-    token   string
-    http    *http.Client
-}
-
-func (c *HTTPClient) ListPipelines(orgID string) ([]models.Pipeline, error) {
-    req, _ := http.NewRequest("GET", c.baseURL+"/internal/pipelines", nil)
-    req.Header.Set("Authorization", "Bearer "+c.token)
-    req.Header.Set("X-Org-ID", orgID)
-    // ... parse response
-}
-```
-
----
-
-## Production DB-backed Key Store
-
-Replace `auth.NewInMemoryKeyStore()` with a DB implementation:
-
-```go
-// Your api_keys table schema (suggested):
-// CREATE TABLE api_keys (
-//     key_hash     TEXT PRIMARY KEY,   -- SHA-256 of the raw key
-//     org_id       TEXT NOT NULL,
-//     org_name     TEXT NOT NULL,
-//     scopes       TEXT[] NOT NULL,
-//     created_at   TIMESTAMPTZ DEFAULT NOW(),
-//     expires_at   TIMESTAMPTZ,
-//     revoked_at   TIMESTAMPTZ
-// );
-```
-
-See the commented-out `DBKeyStore` in `auth/auth.go` for the implementation stub.
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | HTTP listen port |
-| `PLANASONIX_API_URL` | `http://localhost:9000` | Internal Planasonix API base URL |
-| `PLANASONIX_INTERNAL_TOKEN` | `` | Service-to-service auth token |
-
----
-
-## Claude Desktop Config
-
-Add to your `claude_desktop_config.json` to connect locally:
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "planasonix": {
-      "command": "curl",
-      "args": ["-s", "-N", "-H", "Authorization: Bearer plx_live_yourkey", "http://localhost:8080/sse"]
+      "command": "/usr/local/bin/planasonix-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "PLANASONIX_API_KEY": "flx_your_key_here",
+        "PLANASONIX_API_URL": "https://api.planasonix.com"
+      }
     }
   }
 }
 ```
 
-For a remote/hosted deployment use the `url` transport type instead:
+Restart Claude Desktop. A hammer icon (🔨) confirms MCP tools are active.
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+Create `.cursor/mcp.json` in your project root or `~/.cursor/mcp.json` globally:
+
+```json
+{
+  "mcpServers": {
+    "planasonix": {
+      "command": "/usr/local/bin/planasonix-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "PLANASONIX_API_KEY": "flx_your_key_here",
+        "PLANASONIX_API_URL": "https://api.planasonix.com"
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><strong>Windsurf</strong></summary>
+
+Edit `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "planasonix": {
+      "command": "/usr/local/bin/planasonix-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "PLANASONIX_API_KEY": "flx_your_key_here",
+        "PLANASONIX_API_URL": "https://api.planasonix.com"
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><strong>VS Code (GitHub Copilot)</strong></summary>
+
+Add to your VS Code `settings.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "planasonix": {
+        "command": "/usr/local/bin/planasonix-mcp",
+        "args": ["--stdio"],
+        "env": {
+          "PLANASONIX_API_KEY": "flx_your_key_here",
+          "PLANASONIX_API_URL": "https://api.planasonix.com"
+        }
+      }
+    }
+  }
+}
+```
+</details>
+
+### 4. Verify
+
+Ask your AI assistant:
+
+```
+List my Planasonix pipelines
+```
+
+If you see pipeline data, you're connected.
+
+---
+
+## What You Can Do
+
+```
+"List all my active pipelines"
+"Create a pipeline that extracts orders from PostgreSQL, deduplicates by order_id, and loads into Snowflake"
+"Why did my Salesforce sync fail last night?"
+"Add a filter step to only include records where status is active"
+"Set up a daily schedule for the billing pipeline at 2am EST"
+"Create a new Snowflake connection"
+"What's the error rate on my pipelines this week?"
+"Pause the hourly sync pipeline"
+```
+
+---
+
+## Available Tools (22)
+
+### Pipeline Operations
+
+| Tool | Scope | Description |
+|------|-------|-------------|
+| `list_pipelines` | `pipelines:read` | List all pipelines with status and schedule |
+| `get_pipeline` | `pipelines:read` | Get details for a specific pipeline |
+| `get_run_history` | `pipelines:read` | View recent run history with error details |
+| `get_pipeline_health` | `pipelines:read` | Error rate, latency, rows processed, SLA status |
+| `trigger_pipeline` | `pipelines:write` | Trigger an immediate pipeline run |
+| `pause_pipeline` | `pipelines:write` | Pause a pipeline's schedule |
+| `resume_pipeline` | `pipelines:write` | Resume a paused pipeline |
+| `create_pipeline` | `pipelines:write` | Create a pipeline from natural language description |
+| `update_pipeline` | `pipelines:write` | Modify a pipeline using natural language |
+| `delete_pipeline` | `pipelines:write` | Soft-delete a pipeline (recoverable from UI) |
+
+### Schedule Management
+
+| Tool | Scope | Description |
+|------|-------|-------------|
+| `list_schedules` | `schedules:read` | List all pipeline schedules |
+| `create_schedule` | `schedules:write` | Create a cron-based schedule for a pipeline |
+| `update_schedule` | `schedules:write` | Update a schedule's cron, frequency, or timezone |
+| `delete_schedule` | `schedules:write` | Permanently delete a schedule |
+| `enable_schedule` | `schedules:write` | Re-enable a disabled schedule |
+| `disable_schedule` | `schedules:write` | Disable a schedule without deleting it |
+
+### Connection Management
+
+| Tool | Scope | Description |
+|------|-------|-------------|
+| `list_connectors` | `connectors:read` | List configured source/destination connectors |
+| `test_connection` | `connectors:read` | Test connector reachability and latency |
+| `list_connection_types` | `connections:read` | Discover available connector types |
+| `create_connection` | `connections:write` | Create a new data source or destination |
+| `update_connection` | `connections:write` | Update a connection's name or parameters |
+| `delete_connection` | `connections:write` | Delete a saved connection |
+
+---
+
+## API Key Scopes
+
+| Scope | Grants |
+|-------|--------|
+| `pipelines:read` | View pipelines, run history, health metrics |
+| `pipelines:write` | Create, modify, trigger, pause, resume, delete pipelines |
+| `connectors:read` | View and test connectors |
+| `connections:read` | View connections and connection types |
+| `connections:write` | Create, update, delete connections |
+| `schedules:read` | View pipeline schedules |
+| `schedules:write` | Create, update, enable, disable, delete schedules |
+
+---
+
+## Security
+
+- **Full tenant isolation** — your API key scopes every request to your organization. It is impossible to access another org's data.
+- **Scope-based access control** — read-only keys cannot modify pipelines or connections.
+- **Audit trail** — all MCP requests are logged in your Planasonix dashboard.
+- **No data passthrough** — the MCP server is a thin control plane proxy. Your pipeline data flows directly between sources and destinations, never through MCP.
+
+---
+
+## Enterprise: Remote Deployment (HTTP+SSE)
+
+For organizations that don't allow local binary execution, Planasonix supports a remote HTTP+SSE transport:
+
 ```json
 {
   "mcpServers": {
@@ -178,19 +228,37 @@ For a remote/hosted deployment use the `url` transport type instead:
       "type": "url",
       "url": "https://mcp.planasonix.com/sse",
       "headers": {
-        "Authorization": "Bearer plx_live_yourkey"
+        "Authorization": "Bearer flx_your_key_here"
       }
     }
   }
 }
 ```
 
+Self-hosted Docker deployment is also available for Enterprise customers. See the [full integration guide](https://docs.planasonix.com/mcp) for details.
+
 ---
 
-## Adding New Tools
+## Troubleshooting
 
-1. Add the method to `PlanasonixClient` interface in `tools/tools.go`
-2. Implement it in `tools/stub_client.go` (stub) and your HTTP client
-3. Add the handler function in `tools/tools.go` following the same org-scope pattern
-4. Register the case in `Handler.Dispatch()`
-5. Add the `ToolDefinition` in `server/buildToolDefinitions()`
+| Problem | Solution |
+|---------|----------|
+| AI client doesn't show MCP tools | Verify config JSON is valid. Check the binary path is correct and executable. |
+| "Unauthorized" error | API key may be invalid or revoked. Generate a new one in Settings → API Keys. |
+| "Insufficient permissions" | Your key is missing the required scope. Generate a new key with the right scopes. |
+| Pipeline creation times out | AI generation can take up to 2 min. Simplify the description or break into steps. |
+| macOS quarantine warning | Run: `xattr -d com.apple.quarantine /usr/local/bin/planasonix-mcp` |
+
+---
+
+## Support
+
+- Documentation: [docs.planasonix.com/mcp](https://docs.planasonix.com/mcp)
+- Email: [support@planasonix.com](mailto:support@planasonix.com)
+- Issues: [github.com/planasonix/mcp-server/issues](https://github.com/planasonix/mcp-server/issues)
+
+---
+
+## License
+
+[MIT](LICENSE)

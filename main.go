@@ -16,7 +16,14 @@ import (
 	"github.com/planasonix/mcp-server/tools"
 )
 
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("planasonix-mcp", version)
+		return
+	}
+
 	cfg := loadConfig()
 
 	// ── Key store ───────────────────────────────────────────────────────
