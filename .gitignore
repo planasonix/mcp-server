@@ -1,0 +1,16 @@
+# Compiled binary
+mcp-server
+mcp-server.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage.out
